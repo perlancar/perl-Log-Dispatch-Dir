@@ -9,7 +9,7 @@ package Log::Dispatch::Dir;
         name => 'dir1',
         min_level => 'info',
         dirname => 'somedir.log',
-        filename_pattern => '%Y%m%d-%H%M%S.%{pid}.html',
+        filename_pattern => '%Y%m%d-%H%M%S.%{ext}',
     );
     $dir->log( level => 'info', message => 'your comment\n" );
 
@@ -119,7 +119,7 @@ message once.
 =item * filename_pattern ($)
 
 Names to give to each file, expressed in pattern a la strftime()'s. Optional.
-Default is '%Y%m%d-%H%M%S.%{pid}'. Time is expressed in local time.
+Default is '%Y%m%d-%H%M%S.%{pid}.%{ext}'. Time is expressed in local time.
 
 If file of the same name already exists, a suffix ".1", ".2", and so on will be
 appended.
