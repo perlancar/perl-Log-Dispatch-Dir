@@ -42,6 +42,7 @@ responses (like HTTP::Response content).
 
 =cut
 
+use 5.010;
 use warnings;
 use strict;
 use Log::Dispatch::Output;
@@ -205,26 +206,27 @@ sub _make_handle {
     my $self = shift;
 
     my %p = validate(
-                     @_,
-                     {
-                      dirname => { type => SCALAR },
-                      permissions => { type => SCALAR, optional => 1 },
-                      filename_pattern => { type => SCALAR, optional => 1 },
-                      filename_sub => { type => CODEREF, optional => 1 },
-                      max_size => { type => SCALAR, optional => 1 },
-                      max_files => { type => SCALAR, optional => 1 },
-                      max_age => { type => SCALAR, optional => 1 },
-                      rotate_probability => { type => SCALAR, optional => 1 },
-                      });
+        @_,
+        {
+            dirname             => { type => SCALAR },
+            permissions         => { type => SCALAR , optional => 1 },
+            filename_pattern    => { type => SCALAR , optional => 1 },
+            filename_sub        => { type => CODEREF, optional => 1 },
+            max_size            => { type => SCALAR , optional => 1 },
+            max_files           => { type => SCALAR , optional => 1 },
+            max_age             => { type => SCALAR , optional => 1 },
+            rotate_probability  => { type => SCALAR , optional => 1 },
+        });
 
-    $self->{dirname} = $p{dirname};
-    $self->{permissions} = $p{permissions};
-    $self->{filename_pattern} = defined($p{filename_pattern}) ? $p{filename_pattern} : '%Y%m%d-%H%M%S.%{pid}';
-    $self->{filename_sub} = $p{filename_sub};
-    $self->{max_size} = $p{max_size};
-    $self->{max_files} = $p{max_files};
-    $self->{max_age} = $p{max_age};
-    $self->{rotate_probability} = defined($p{rotate_probability}) ? $p{rotate_probability} : 0.25;
+    $self->{dirname}            = $p{dirname};
+    $self->{permissions}        = $p{permissions};
+    $self->{filename_pattern}   = $p{filename_pattern} //
+        '%Y%m%d-%H%M%S.%{pid}';
+    $self->{filename_sub}       = $p{filename_sub};
+    $self->{max_size}           = $p{max_size};
+    $self->{max_files}          = $p{max_files};
+    $self->{max_age}            = $p{max_age};
+    $self->{rotate_probability} = ($p{rotate_probability}) // 0.25;
     $self->_open_dir();
 }
 
@@ -232,7 +234,7 @@ sub _open_dir {
     my $self = shift;
 
     unless (-e $self->{dirname}) {
-        my $perm = defined($self->{permissions}) ? $self->{permissions} : 0755;
+        my $perm = $self->{permissions} // 0755;
         mkdir($self->{dirname}, $perm)
             or die "Cannot create directory `$self->{dirname}: $!";
         $self->{chmodded} = 1;
@@ -255,7 +257,8 @@ sub _resolve_pattern {
     my $now = time;
 
     my @vars = qw(Y y m d H M S z Z %);
-    my $strftime = POSIX::strftime(join("|", map {"%$_"} @vars), localtime($now));
+    my $strftime = POSIX::strftime(join("|", map {"%$_"} @vars),
+                                   localtime($now));
     my %vars;
     my $i = 0;
     for (split /\|/, $strftime) {
@@ -265,7 +268,8 @@ sub _resolve_pattern {
     push @vars, "{pid}"; $vars{"{pid}"} = $$;
     my $res = $pat;
     $res =~ s[%(\{\w+\}|\S)]
-             [defined($vars{$1}) ? $vars{$1} : die("Invalid filename_pattern `%$1'")]eg;
+             [defined($vars{$1}) ? $vars{$1} :
+                  die("Invalid filename_pattern `%$1'")]eg;
     $res;
 }
 
