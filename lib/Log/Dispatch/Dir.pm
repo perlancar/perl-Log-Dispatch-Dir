@@ -148,6 +148,12 @@ Available pattern:
 
 =item %{pid} - Process ID
 
+=item %{ext} - Guessed file extension
+
+Try to detect appropriate file extension using L<File::LibMagic>. For example,
+if log message looks like an HTML document, then 'html'. If File::LibMagic is
+not available or type cannot be detected, defaults to 'log'.
+
 =item %% - literal '%' character
 
 =back
@@ -221,7 +227,7 @@ sub _make_handle {
     $self->{dirname}            = $p{dirname};
     $self->{permissions}        = $p{permissions};
     $self->{filename_pattern}   = $p{filename_pattern} //
-        '%Y%m%d-%H%M%S.%{pid}';
+        '%Y%m%d-%H%M%S.%{pid}.%{ext}';
     $self->{filename_sub}       = $p{filename_sub};
     $self->{max_size}           = $p{max_size};
     $self->{max_files}          = $p{max_files};
@@ -251,8 +257,11 @@ sub _open_dir {
     }
 }
 
+my $default_ext = "log";
+my $libmagic;
+
 sub _resolve_pattern {
-    my ($self) = @_;
+    my ($self, $p) = @_;
     my $pat = $self->{filename_pattern};
     my $now = time;
 
@@ -265,11 +274,35 @@ sub _resolve_pattern {
         $vars{ $vars[$i] } = $_;
         $i++;
     }
-    push @vars, "{pid}"; $vars{"{pid}"} = $$;
+
+    push @vars, "{pid}";
+    $vars{"{pid}"} = $$;
+
+    push @vars, "{ext}";
+    $vars{"{ext}"} = sub {
+        my $p = shift;
+        unless (defined $libmagic) {
+            if (eval { require File::LibMagic; require Media::Type::Simple }) {
+                $libmagic = File::LibMagic->new;
+            } else {
+                print "err = $@\n";
+                $libmagic = 0;
+            }
+        }
+        return $default_ext."0" unless $libmagic;
+        my $type = $libmagic->checktype_contents($p->{message} // '');
+        return $default_ext."1" unless $type;
+        $type =~ s/;.+//;
+        my $ext = Media::Type::Simple::ext_from_type($type);
+        return $ext || $default_ext."2";
+    };
+
     my $res = $pat;
     $res =~ s[%(\{\w+\}|\S)]
-             [defined($vars{$1}) ? $vars{$1} :
-                  die("Invalid filename_pattern `%$1'")]eg;
+             [defined($vars{$1}) ?
+                  ( ref($vars{$1}) eq 'CODE' ?
+                        $vars{$1}->($p) : $vars{$1} ) :
+                            die("Invalid filename_pattern `%$1'")]eg;
     $res;
 }
 
@@ -287,7 +320,7 @@ sub log_message {
 
     my $filename0 = defined($self->{filename_sub}) ?
         $self->{filename_sub}->(%p) :
-        $self->_resolve_pattern();
+        $self->_resolve_pattern(\%p);
 
     my $filename = $filename0;
     my $i = 0;
@@ -297,11 +330,11 @@ sub log_message {
     }
 
     write_file("$self->{dirname}/$filename", $p{message});
-    $self->_rotate() if (rand() < $self->{rotate_probability});
+    $self->_rotate(\%p) if (rand() < $self->{rotate_probability});
 }
 
 sub _rotate {
-    my ($self) = @_;
+    my ($self, $p) = @_;
 
     my $ms = $self->{max_size};
     my $mf = $self->{max_files};
