@@ -292,8 +292,8 @@ sub _resolve_pattern {
         return $default_ext unless $libmagic;
         my $type = $libmagic->checktype_contents($p->{message} // '');
         return $default_ext unless $type;
-        $type =~ s/;.+//;
-
+        $type =~ s/[; ].*//; # only get the mime type
+        my $ext = Media::Type::Simple->ext_from_type($type);
         return $ext || $default_ext;
     };
 
