@@ -64,7 +64,7 @@ if (eval { require File::LibMagic; require Media::Type::Simple }) {
 } else {
     diag "Warning: File::LibMagic and/or Media::Type::Simple not available, will only be testing default extension";
     like($f[0], qr!/log$!, "filename_pattern ext: log (1)");
-    like($f[1], qr!/log$!, "filename_pattern ext: log (2)");
+    like($f[1], qr!/log(\.1)?$!, "filename_pattern ext: log (2)");
 }
 
 # filename_sub
