@@ -1,4 +1,209 @@
 package Log::Dispatch::Dir;
+
+use 5.010;
+use warnings;
+use strict;
+use Log::Dispatch::Output;
+use base qw(Log::Dispatch::Output);
+
+use File::Slurp;
+#use File::Stat qw(:stat); # doesn't work in all platforms?
+use Params::Validate qw(validate SCALAR CODEREF);
+use POSIX;
+use Taint::Util;
+
+# VERSION
+
+Params::Validate::validation_options( allow_extra => 1 );
+
+sub new {
+    my $proto = shift;
+    my $class = ref $proto || $proto;
+
+    my %p = @_;
+
+    my $self = bless {}, $class;
+
+    $self->_basic_init(%p);
+    $self->_make_handle(%p);
+
+    return $self;
+}
+
+sub _make_handle {
+    my $self = shift;
+
+    my %p = validate(
+        @_,
+        {
+            dirname             => { type => SCALAR },
+            permissions         => { type => SCALAR , optional => 1 },
+            filename_pattern    => { type => SCALAR , optional => 1 },
+            filename_sub        => { type => CODEREF, optional => 1 },
+            max_size            => { type => SCALAR , optional => 1 },
+            max_files           => { type => SCALAR , optional => 1 },
+            max_age             => { type => SCALAR , optional => 1 },
+            rotate_probability  => { type => SCALAR , optional => 1 },
+        });
+
+    $self->{dirname}            = $p{dirname};
+    $self->{permissions}        = $p{permissions};
+    $self->{filename_pattern}   = $p{filename_pattern} ||
+        '%Y-%m-%d-%H%M%S.pid-%{pid}.%{ext}';
+    $self->{filename_sub}       = $p{filename_sub};
+    $self->{max_size}           = $p{max_size};
+    $self->{max_files}          = $p{max_files};
+    $self->{max_age}            = $p{max_age};
+    $self->{rotate_probability} = ($p{rotate_probability}) || 0.25;
+    $self->_open_dir();
+}
+
+sub _open_dir {
+    my $self = shift;
+
+    unless (-e $self->{dirname}) {
+        my $perm = $self->{permissions} // 0755;
+        mkdir($self->{dirname}, $perm)
+            or die "Cannot create directory `$self->{dirname}: $!";
+        $self->{chmodded} = 1;
+    }
+
+    unless (-d $self->{dirname}) {
+        die "$self->{dirname} is not a directory";
+    }
+
+    if ($self->{permissions} && ! $self->{chmodded}) {
+        chmod $self->{permissions}, $self->{dirname}
+            or die "Cannot chmod $self->{dirname} to $self->{permissions}: $!";
+        $self->{chmodded} = 1;
+    }
+}
+
+my $default_ext = "log";
+my $libmagic;
+
+sub _resolve_pattern {
+    my ($self, $p) = @_;
+    my $pat = $self->{filename_pattern};
+    my $now = time;
+
+    my @vars = qw(Y y m d H M S z Z %);
+    my $strftime = POSIX::strftime(join("|", map {"%$_"} @vars),
+                                   localtime($now));
+    my %vars;
+    my $i = 0;
+    for (split /\|/, $strftime) {
+        $vars{ $vars[$i] } = $_;
+        $i++;
+    }
+
+    push @vars, "{pid}";
+    $vars{"{pid}"} = $$;
+
+    push @vars, "{ext}";
+    $vars{"{ext}"} = sub {
+        my $p = shift;
+        unless (defined $libmagic) {
+            if (eval { require File::LibMagic; require Media::Type::Simple }) {
+                $libmagic = File::LibMagic->new;
+            } else {
+                print "err = $@\n";
+                $libmagic = 0;
+            }
+        }
+        return $default_ext unless $libmagic;
+        my $type = $libmagic->checktype_contents($p->{message} // '');
+        return $default_ext unless $type;
+        $type =~ s/[; ].*//; # only get the mime type
+        my $ext = Media::Type::Simple::ext_from_type($type);
+        return $ext || $default_ext;
+    };
+
+    my $res = $pat;
+    $res =~ s[%(\{\w+\}|\S)]
+             [defined($vars{$1}) ?
+                  ( ref($vars{$1}) eq 'CODE' ?
+                        $vars{$1}->($p) : $vars{$1} ) :
+                            die("Invalid filename_pattern `%$1'")]eg;
+    $res;
+}
+
+sub log_message {
+    my $self = shift;
+    my %p = @_;
+
+    my $filename0 = defined($self->{filename_sub}) ?
+        $self->{filename_sub}->(%p) :
+        $self->_resolve_pattern(\%p);
+
+    my $filename = $filename0;
+    my $i = 0;
+    while (-e "$self->{dirname}/$filename") {
+        $i++;
+        $filename = "$filename0.$i";
+    }
+
+    write_file("$self->{dirname}/$filename", $p{message});
+    $self->_rotate(\%p) if (rand() < $self->{rotate_probability});
+}
+
+sub _rotate {
+    my ($self, $p) = @_;
+
+    my $ms = $self->{max_size};
+    my $mf = $self->{max_files};
+    my $ma = $self->{max_age};
+
+    return unless (defined($ms) || defined($mf) || defined($ma));
+
+    my @entries;
+    my $d = $self->{dirname};
+    my $now = time;
+    local *DH;
+    opendir DH, $self->{dirname};
+    while (my $e = readdir DH) {
+        untaint $e;
+        next if $e eq '.' || $e eq '..';
+        my @st = stat "$d/$e";
+        push @entries, {name => $e, age => ($now-$st[10]), size => $st[7]};
+    }
+    closedir DH;
+
+    @entries = sort {$a->{age} <=> $b->{age}} @entries;
+
+    # max files
+    if (defined($mf) && @entries > $mf) {
+        unlink "$d/$_->{name}" for (splice @entries, $mf);
+    }
+
+    # max age
+    if (defined($ma)) {
+        my $i = 0;
+        for (@entries) {
+            if ($_->{age} > $ma) {
+                unlink "$d/$_->{name}" for (splice @entries, $i);
+                last;
+            }
+            $i++;
+        }
+    }
+
+    # max size
+    if (defined($ms)) {
+        my $i = 0;
+        my $tot_size = 0;
+        for (@entries) {
+            $tot_size += $_->{size};
+            if ($tot_size > $ms) {
+                unlink "$d/$_->{name}" for (splice @entries, $i);
+                last;
+            }
+            $i++;
+        }
+    }
+}
+
+1;
 # ABSTRACT: Log messages to separate files in a directory, with rotate options
 
 =head1 SYNOPSIS
@@ -31,6 +236,7 @@ package Log::Dispatch::Dir;
         max_age => 10*24*3600, # 10 days
     );
 
+
 =head1 DESCRIPTION
 
 This module provides a simple object for logging to directories under the
@@ -40,21 +246,6 @@ constraints. Each message will be logged to a separate file the directory.
 Logging to separate files can be useful for example when dumping whole network
 responses (like HTTP::Response content).
 
-=cut
-
-use 5.010;
-use warnings;
-use strict;
-use Log::Dispatch::Output;
-use base qw(Log::Dispatch::Output);
-
-use File::Slurp;
-#use File::Stat qw(:stat); # doesn't work in all platforms?
-use Params::Validate qw(validate SCALAR CODEREF);
-use POSIX;
-use Taint::Util;
-
-Params::Validate::validation_options( allow_extra => 1 );
 
 =head1 METHODS
 
@@ -192,207 +383,15 @@ Default is 0.25.
 
 =back
 
-=cut
-
-sub new {
-    my $proto = shift;
-    my $class = ref $proto || $proto;
-
-    my %p = @_;
-
-    my $self = bless {}, $class;
-
-    $self->_basic_init(%p);
-    $self->_make_handle(%p);
-
-    return $self;
-}
-
-sub _make_handle {
-    my $self = shift;
-
-    my %p = validate(
-        @_,
-        {
-            dirname             => { type => SCALAR },
-            permissions         => { type => SCALAR , optional => 1 },
-            filename_pattern    => { type => SCALAR , optional => 1 },
-            filename_sub        => { type => CODEREF, optional => 1 },
-            max_size            => { type => SCALAR , optional => 1 },
-            max_files           => { type => SCALAR , optional => 1 },
-            max_age             => { type => SCALAR , optional => 1 },
-            rotate_probability  => { type => SCALAR , optional => 1 },
-        });
-
-    $self->{dirname}            = $p{dirname};
-    $self->{permissions}        = $p{permissions};
-    $self->{filename_pattern}   = $p{filename_pattern} ||
-        '%Y-%m-%d-%H%M%S.pid-%{pid}.%{ext}';
-    $self->{filename_sub}       = $p{filename_sub};
-    $self->{max_size}           = $p{max_size};
-    $self->{max_files}          = $p{max_files};
-    $self->{max_age}            = $p{max_age};
-    $self->{rotate_probability} = ($p{rotate_probability}) || 0.25;
-    $self->_open_dir();
-}
-
-sub _open_dir {
-    my $self = shift;
-
-    unless (-e $self->{dirname}) {
-        my $perm = $self->{permissions} // 0755;
-        mkdir($self->{dirname}, $perm)
-            or die "Cannot create directory `$self->{dirname}: $!";
-        $self->{chmodded} = 1;
-    }
-
-    unless (-d $self->{dirname}) {
-        die "$self->{dirname} is not a directory";
-    }
-
-    if ($self->{permissions} && ! $self->{chmodded}) {
-        chmod $self->{permissions}, $self->{dirname}
-            or die "Cannot chmod $self->{dirname} to $self->{permissions}: $!";
-        $self->{chmodded} = 1;
-    }
-}
-
-my $default_ext = "log";
-my $libmagic;
-
-sub _resolve_pattern {
-    my ($self, $p) = @_;
-    my $pat = $self->{filename_pattern};
-    my $now = time;
-
-    my @vars = qw(Y y m d H M S z Z %);
-    my $strftime = POSIX::strftime(join("|", map {"%$_"} @vars),
-                                   localtime($now));
-    my %vars;
-    my $i = 0;
-    for (split /\|/, $strftime) {
-        $vars{ $vars[$i] } = $_;
-        $i++;
-    }
-
-    push @vars, "{pid}";
-    $vars{"{pid}"} = $$;
-
-    push @vars, "{ext}";
-    $vars{"{ext}"} = sub {
-        my $p = shift;
-        unless (defined $libmagic) {
-            if (eval { require File::LibMagic; require Media::Type::Simple }) {
-                $libmagic = File::LibMagic->new;
-            } else {
-                print "err = $@\n";
-                $libmagic = 0;
-            }
-        }
-        return $default_ext unless $libmagic;
-        my $type = $libmagic->checktype_contents($p->{message} // '');
-        return $default_ext unless $type;
-        $type =~ s/[; ].*//; # only get the mime type
-        my $ext = Media::Type::Simple::ext_from_type($type);
-        return $ext || $default_ext;
-    };
-
-    my $res = $pat;
-    $res =~ s[%(\{\w+\}|\S)]
-             [defined($vars{$1}) ?
-                  ( ref($vars{$1}) eq 'CODE' ?
-                        $vars{$1}->($p) : $vars{$1} ) :
-                            die("Invalid filename_pattern `%$1'")]eg;
-    $res;
-}
-
 =head2 log_message(message => $)
 
 Sends a message to the appropriate output. Generally this shouldn't be called
 directly but should be called through the C<log()> method (in
 Log::Dispatch::Output).
 
-=cut
-
-sub log_message {
-    my $self = shift;
-    my %p = @_;
-
-    my $filename0 = defined($self->{filename_sub}) ?
-        $self->{filename_sub}->(%p) :
-        $self->_resolve_pattern(\%p);
-
-    my $filename = $filename0;
-    my $i = 0;
-    while (-e "$self->{dirname}/$filename") {
-        $i++;
-        $filename = "$filename0.$i";
-    }
-
-    write_file("$self->{dirname}/$filename", $p{message});
-    $self->_rotate(\%p) if (rand() < $self->{rotate_probability});
-}
-
-sub _rotate {
-    my ($self, $p) = @_;
-
-    my $ms = $self->{max_size};
-    my $mf = $self->{max_files};
-    my $ma = $self->{max_age};
-
-    return unless (defined($ms) || defined($mf) || defined($ma));
-
-    my @entries;
-    my $d = $self->{dirname};
-    my $now = time;
-    local *DH;
-    opendir DH, $self->{dirname};
-    while (my $e = readdir DH) {
-        untaint $e;
-        next if $e eq '.' || $e eq '..';
-        my @st = stat "$d/$e";
-        push @entries, {name => $e, age => ($now-$st[10]), size => $st[7]};
-    }
-    closedir DH;
-
-    @entries = sort {$a->{age} <=> $b->{age}} @entries;
-
-    # max files
-    if (defined($mf) && @entries > $mf) {
-        unlink "$d/$_->{name}" for (splice @entries, $mf);
-    }
-
-    # max age
-    if (defined($ma)) {
-        my $i = 0;
-        for (@entries) {
-            if ($_->{age} > $ma) {
-                unlink "$d/$_->{name}" for (splice @entries, $i);
-                last;
-            }
-            $i++;
-        }
-    }
-
-    # max size
-    if (defined($ms)) {
-        my $i = 0;
-        my $tot_size = 0;
-        for (@entries) {
-            $tot_size += $_->{size};
-            if ($tot_size > $ms) {
-                unlink "$d/$_->{name}" for (splice @entries, $i);
-                last;
-            }
-            $i++;
-        }
-    }
-}
 
 =head1 SEE ALSO
 
 L<Log::Dispatch>
 
 =cut
-
-1;
