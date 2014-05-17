@@ -6,7 +6,7 @@ use strict;
 use Log::Dispatch::Output;
 use base qw(Log::Dispatch::Output);
 
-use File::Slurp;
+use File::Slurp::Tiny qw(write_file);
 #use File::Stat qw(:stat); # doesn't work in all platforms?
 use Params::Validate qw(validate SCALAR CODEREF);
 use POSIX;
