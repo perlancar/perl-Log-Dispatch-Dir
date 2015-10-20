@@ -1,5 +1,12 @@
 Revision history for Log-Dispatch-Dir
 
+0.13    2015-10-20 (PERLANCAR)
+
+	- No functional changes.
+
+	- Remove use of Taint::Util to reduce deps.
+
+
 0.12    2014-05-17 (SHARYANTO)
 
         - No functional changes.
