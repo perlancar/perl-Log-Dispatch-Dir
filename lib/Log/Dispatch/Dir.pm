@@ -1,5 +1,8 @@
 package Log::Dispatch::Dir;
 
+# DATE
+# VERSION
+
 use 5.010001;
 use warnings;
 use strict;
@@ -10,9 +13,6 @@ use File::Slurp::Tiny qw(write_file);
 #use File::Stat qw(:stat); # doesn't work in all platforms?
 use Params::Validate qw(validate SCALAR CODEREF);
 use POSIX;
-use Taint::Util;
-
-# VERSION
 
 Params::Validate::validation_options( allow_extra => 1 );
 
@@ -162,7 +162,7 @@ sub _rotate {
     local *DH;
     opendir DH, $self->{dirname};
     while (my $e = readdir DH) {
-        untaint $e;
+        ($e) = $e =~ /(.*)/s; # untaint
         next if $e eq '.' || $e eq '..';
         my @st = stat "$d/$e";
         push @entries, {name => $e, age => ($now-$st[10]), size => $st[7]};
