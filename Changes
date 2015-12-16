@@ -1,5 +1,12 @@
 Revision history for Log-Dispatch-Dir
 
+0.14    2015-12-16 (PERLANCAR)
+
+	- No functional changes.
+
+	- Untaint result from Media::Type::Simple [RT#108188].
+
+
 0.13    2015-10-20 (PERLANCAR)
 
 	- No functional changes.
