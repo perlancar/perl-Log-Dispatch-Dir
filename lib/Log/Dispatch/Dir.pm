@@ -9,7 +9,7 @@ use strict;
 use Log::Dispatch::Output;
 use base qw(Log::Dispatch::Output);
 
-use File::Slurp::Tiny qw(write_file);
+use File::Slurper qw(write_text);
 #use File::Stat qw(:stat); # doesn't work in all platforms?
 use Params::Validate qw(validate SCALAR CODEREF);
 use POSIX;
@@ -144,7 +144,7 @@ sub log_message {
         $filename = "$filename0.$i";
     }
 
-    write_file("$self->{dirname}/$filename", $p{message});
+    write_text("$self->{dirname}/$filename", $p{message});
     $self->_rotate(\%p) if (rand() < $self->{rotate_probability});
 }
 
